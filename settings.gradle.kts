@@ -9,6 +9,7 @@ pluginManagement {
         }
         mavenCentral()
         gradlePluginPortal()
+        maven { url = uri("https://jitpack.io") }
     }
 }
 dependencyResolutionManagement {
@@ -22,4 +23,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "Test-CICD"
 include(":app")
- 
+include(":library")

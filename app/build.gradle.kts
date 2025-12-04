@@ -22,7 +22,7 @@ android {
             isMinifyEnabled = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
-                "proguard-rules.pro"
+                "proguard-rules.pro",
             )
         }
     }
@@ -35,7 +35,7 @@ android {
     }
 
     buildFeatures {
-        dataBinding = true  // MVVM 패턴 사용 시 필수
+        dataBinding = true // MVVM 패턴 사용 시 필수
         // viewBinding = true  // ViewBinding만 사용할 경우
     }
 }
@@ -51,6 +51,6 @@ dependencies {
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
 
-    implementation("com.github.Rhpark.Simple_UI_XML:Simple_UI_Core:0.3.13")  // Core functionality only.
-    implementation("com.github.Rhpark.Simple_UI_XML:Simple_UI_XML:0.3.13")   // XML UI components (includes Core).
+    implementation("com.github.Rhpark.Simple_UI_XML:Simple_UI_Core:0.3.29") // Core functionality only.
+    implementation("com.github.Rhpark.Simple_UI_XML:Simple_UI_XML:0.3.29") // XML UI components (includes Core).
 }

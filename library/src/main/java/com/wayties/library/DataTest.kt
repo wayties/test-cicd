@@ -105,8 +105,7 @@ public fun String.toDate1(
  * }
  * ```
  */
-public fun Long.toLocalDateTime1(): LocalDateTime =
-    Instant.ofEpochMilli(this).atZone(ZoneId.systemDefault()).toLocalDateTime()
+public fun Long.toLocalDateTime1(): LocalDateTime = Instant.ofEpochMilli(this).atZone(ZoneId.systemDefault()).toLocalDateTime()
 
 /**
  * Formats a LocalDateTime to a string using the specified pattern and locale.<br>
@@ -149,8 +148,7 @@ public fun LocalDateTime.format1(
  * }
  * ```
  */
-public fun Date.toLocalDateTime1(): LocalDateTime =
-    this.toInstant().atZone(ZoneId.systemDefault()).toLocalDateTime()
+public fun Date.toLocalDateTime1(): LocalDateTime = this.toInstant().atZone(ZoneId.systemDefault()).toLocalDateTime()
 
 /**
  * Formats a Date object to a string using the specified pattern and locale via LocalDateTime.<br>
@@ -214,8 +212,7 @@ public fun Date.toCompareInSeconds1(other: Date): Long = Math.abs(this.time - ot
  * @return The absolute time difference in minutes.<br><br>
  *         절대 시간 차이 (분 단위).<br>
  */
-public fun Date.toCompareInMinutes1(other: Date): Long =
-    Math.abs(this.time - other.time) / (1000 * 60)
+public fun Date.toCompareInMinutes1(other: Date): Long = Math.abs(this.time - other.time) / (1000 * 60)
 
 /**
  * Calculates the absolute time difference in hours between this Date and another Date.<br><br>
@@ -227,8 +224,7 @@ public fun Date.toCompareInMinutes1(other: Date): Long =
  * @return The absolute time difference in hours.<br><br>
  *         절대 시간 차이 (시간 단위).<br>
  */
-public fun Date.toCompareInHours1(other: Date): Long =
-    Math.abs(this.time - other.time) / (1000 * 3600)
+public fun Date.toCompareInHours1(other: Date): Long = Math.abs(this.time - other.time) / (1000 * 3600)
 
 /**
  * Calculates the number of hours between this LocalDateTime and another LocalDateTime.<br>
@@ -242,8 +238,7 @@ public fun Date.toCompareInHours1(other: Date): Long =
  * @return The number of hours between the two LocalDateTimes (can be negative if other is before this).<br><br>
  *         두 LocalDateTime 사이의 시간 차 (other가 this보다 이전이면 음수일 수 있음).<br>
  */
-public fun LocalDateTime.toCompareInHours1(other: LocalDateTime): Long =
-    ChronoUnit.HOURS.between(this, other)
+public fun LocalDateTime.toCompareInHours1(other: LocalDateTime): Long = ChronoUnit.HOURS.between(this, other)
 
 /**
  * Calculates the number of minutes between this LocalDateTime and another LocalDateTime.<br>
@@ -257,8 +252,7 @@ public fun LocalDateTime.toCompareInHours1(other: LocalDateTime): Long =
  * @return The number of minutes between the two LocalDateTimes (can be negative if other is before this).<br><br>
  *         두 LocalDateTime 사이의 분 차이 (other가 this보다 이전이면 음수일 수 있음).<br>
  */
-public fun LocalDateTime.toCompareInMinutes1(other: LocalDateTime): Long =
-    ChronoUnit.MINUTES.between(this, other)
+public fun LocalDateTime.toCompareInMinutes1(other: LocalDateTime): Long = ChronoUnit.MINUTES.between(this, other)
 
 /**
  * Calculates the number of days between this LocalDate and another LocalDate.<br>
@@ -286,8 +280,7 @@ public fun LocalDate.toCompareInDays1(other: LocalDate): Long = ChronoUnit.DAYS.
  * @return The number of months between the two LocalDates (can be negative if other is before this).<br><br>
  *         두 LocalDate 사이의 월 수 (other가 this보다 이전이면 음수일 수 있음).<br>
  */
-public fun LocalDate.toCompareInMonths1(other: LocalDate): Long =
-    ChronoUnit.MONTHS.between(this, other)
+public fun LocalDate.toCompareInMonths1(other: LocalDate): Long = ChronoUnit.MONTHS.between(this, other)
 
 /**
  * Calculates the number of years between this LocalDate and another LocalDate.<br>
@@ -301,8 +294,7 @@ public fun LocalDate.toCompareInMonths1(other: LocalDate): Long =
  * @return The number of years between the two LocalDates (can be negative if other is before this).<br><br>
  *         두 LocalDate 사이의 연 수 (other가 this보다 이전이면 음수일 수 있음).<br>
  */
-public fun LocalDate.toCompareInYears1(other: LocalDate): Long =
-    ChronoUnit.YEARS.between(this, other)
+public fun LocalDate.toCompareInYears1(other: LocalDate): Long = ChronoUnit.YEARS.between(this, other)
 
 /**
  * Converts a duration in seconds to minutes.<br><br>

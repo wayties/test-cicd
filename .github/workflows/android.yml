@@ -1,26 +1,465 @@
-name: Android CI
+# .github/workflows/android-ci.yml
+name: 1. Android CI
 
 on:
   push:
-    branches: [ "master" ]
+    branches: [ master ]
   pull_request:
-    branches: [ "master" ]
+    branches: [ master ]
+  workflow_dispatch:
 
 jobs:
-  build:
-
+  initialize-check:
+    name: Initialize Check
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    outputs:
+      should_release: ${{ steps.determine.outputs.should_release }}
+      tag: ${{ steps.determine.outputs.tag }}
+      title: ${{ steps.determine.outputs.title }}
+      body: ${{ steps.determine.outputs.body }}
+      docs_only: ${{ steps.determine.outputs.docs_only }}
+      testers: ${{ steps.determine.outputs.testers }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 10
+
+      - name: Analyze release metadata
+        id: determine
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before || '' }}
+        run: |
+          set -euo pipefail
+          LOG_FILE="${GITHUB_WORKSPACE}/initialize-check.log"
+          exec > >(tee "$LOG_FILE")
+          exec 2>&1
+
+          SHOULD_RELEASE=false
+          TAG=""
+          TITLE=""
+          DESCRIBE=""
+          TESTERS=""
+
+          echo "Checking [release] tag in HEAD commit..."
+          COMMIT_MSG=$(git log -1 --pretty=%B 2>/dev/null || echo "")
+          if echo "$COMMIT_MSG" | grep -q "\[release\]"; then
+            FOUND=true
+          else
+            FOUND=false
+          fi
+
+          TARGET_BASE="${BASE_SHA}"
+          if [ -z "$TARGET_BASE" ]; then
+            if git rev-parse HEAD^ >/dev/null 2>&1; then
+              TARGET_BASE=$(git rev-parse HEAD^)
+            else
+              TARGET_BASE=""
+            fi
+          fi
+
+          echo "Calculating changed files against base '${TARGET_BASE:-<unknown>}'..."
+          if [ -n "$TARGET_BASE" ]; then
+            mapfile -t CHANGED_FILES < <(git diff --name-only "$TARGET_BASE" HEAD)
+          else
+            mapfile -t CHANGED_FILES < <(git ls-tree --name-only -r HEAD)
+          fi
+
+          DOCS_ONLY=false
+          if [ "${#CHANGED_FILES[@]}" -gt 0 ]; then
+            DOCS_ONLY=true
+            for file in "${CHANGED_FILES[@]}"; do
+              if [[ "$file" =~ (^|/)README[^/]*\.md$ ]]; then
+                continue
+              fi
+              if [[ "$file" =~ ^example_gif/ ]]; then
+                continue
+              fi
+              DOCS_ONLY=false
+              break
+            done
+          fi
+          echo "Docs-only commit detected? ${DOCS_ONLY}"
+
+          if [ "$FOUND" = false ]; then
+            if [ "$DOCS_ONLY" = true ]; then
+              echo "Doc-only commit without [release] block detected. Skipping downstream jobs."
+              {
+                echo "should_release=false"
+                echo "tag="
+                echo "title="
+                echo "body="
+                echo "docs_only=true"
+              } >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "No [release] block found in HEAD commit. Skipping release."
+            {
+              echo "should_release=false"
+              echo "tag="
+              echo "title="
+              echo "body="
+              echo "docs_only=false"
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ "$DOCS_ONLY" = true ]; then
+            echo "Doc-only changes found but release metadata detected. Continuing CI."
+            DOCS_ONLY=false
+          fi
+
+          echo "Release block detected. Parsing metadata..."
+          TAG=$(echo "$COMMIT_MSG" | grep -oP '(?<=Tag)\s*:\s*.*' | head -1 | sed 's/^[[:space:]]*:[[:space:]]*//' | xargs || true)
+          TITLE=$(echo "$COMMIT_MSG" | grep -oP '(?<=Title)\s*:\s*.*' | head -1 | sed 's/^[[:space:]]*:[[:space:]]*//' | xargs || true)
+          DESCRIBE=$(echo "$COMMIT_MSG" | awk '/Describe\s*:/,0' | tail -n +1 | sed '1s/Describe\s*:\s*//' )
+          if [ -z "$DESCRIBE" ]; then
+            DESCRIBE=$(echo "$COMMIT_MSG" | awk '/Describe\s*:/,0' | tail -n +1 | sed '1s/Describe\s*:\s*//' )
+          fi
+          RAW_TESTERS=$(echo "$COMMIT_MSG" | grep -oP '(?<=Tester)\s*:\s*.*' | head -1 | sed 's/^[[:space:]]*:[[:space:]]*//' || true)
+          TESTERS=""
+          if [ -n "$RAW_TESTERS" ]; then
+            TESTERS=$(echo "$RAW_TESTERS" | sed 's/[[:space:]]//g')
+          fi
+
+          if [ -z "$TAG" ]; then
+            echo "Error: Tag not found in [release] block."
+            exit 1
+          fi
+
+          if ! echo "$TAG" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "Error: Tag format is invalid. Expected x.x.x."
+            exit 1
+          fi
+
+          git fetch --tags
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "Error: Tag $TAG already exists."
+            exit 1
+          fi
+
+          GRADLE_VERSION=$(python3 .github/scripts/read_app_version.py || true)
+          if [ -z "$GRADLE_VERSION" ]; then
+            echo "Error: Failed to read version from simple_core/build.gradle.kts or simple_xml/build.gradle.kts"
+            exit 1
+          fi
+
+          if [ "$TAG" != "$GRADLE_VERSION" ]; then
+            echo "Error: Version mismatch between commit tag ($TAG) and build.gradle.kts ($GRADLE_VERSION)"
+            exit 1
+          fi
+
+          echo "Release metadata validated."
+          {
+            echo "should_release=true"
+            echo "tag=$TAG"
+            echo "title=$TITLE"
+            echo "body<<EOF"
+            echo "$DESCRIBE"
+            echo "EOF"
+            echo "testers=$TESTERS"
+            echo "docs_only=false"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Save metadata to artifact
+        if: steps.determine.outputs.should_release == 'true'
+        run: |
+          mkdir -p metadata
+          cat > metadata/release-metadata.json <<EOF
+          {
+            "should_release": "${{ steps.determine.outputs.should_release }}",
+            "tag": "${{ steps.determine.outputs.tag }}",
+            "title": "${{ steps.determine.outputs.title }}",
+            "body": $(echo '${{ steps.determine.outputs.body }}' | jq -Rs .),
+            "testers": "${{ steps.determine.outputs.testers }}"
+          }
+          EOF
+          cat metadata/release-metadata.json
+
+      - name: Upload metadata artifact
+        if: steps.determine.outputs.should_release == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-metadata
+          path: metadata/release-metadata.json
+          retention-days: 1
+
+      - name: Report failure (Initialize Check)
+        if: failure()
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          STAGE_NAME: "Initialize Check"
+          FAILURE_MESSAGE: "Release block validation failed. Please inspect release metadata."
+          RELEASE_CHECK_LOG: ${{ github.workspace }}/initialize-check.log
+          FAILURE_ENVIRONMENT: |
+            Runner: ${{ runner.os }}
+            Event: ${{ github.event_name }}
+        run: |
+          FAILURE_LOG_PATH="${GITHUB_WORKSPACE}/initialize-check-failure.log"
+          SUMMARY="Initialize Check failed. See logs above for details."
+          if [ -f "$RELEASE_CHECK_LOG" ]; then
+            python3 .github/scripts/extract_gradle_failure.py "$RELEASE_CHECK_LOG" "$FAILURE_LOG_PATH"
+            SUMMARY="$(head -n 1 "$FAILURE_LOG_PATH" | tr -d '\r')"
+          else
+            echo "$SUMMARY" > "$FAILURE_LOG_PATH"
+          fi
+          export FAILURE_LOG_PATH
+          export FAILURE_MESSAGE="$SUMMARY"
+          bash .github/scripts/report_action_error.sh
+
+  ktlint:
+    name: KtLint Check
+    if: ${{ needs.initialize-check.outputs.docs_only != 'true' }}
+    runs-on: ubuntu-latest
+    needs: initialize-check
+    permissions:
+      contents: read
+      issues: write
 
     steps:
-    - uses: actions/checkout@v4
-    - name: set up JDK 11
-      uses: actions/setup-java@v4
-      with:
-        java-version: '11'
-        distribution: 'temurin'
-        cache: gradle
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-    - name: Grant execute permission for gradlew
-      run: chmod +x gradlew
-    - name: Build with Gradle
-      run: ./gradlew build
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-read-only: false
+          cache-cleanup: on-success
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      - name: Run KtLint
+        run: bash -o pipefail -c "./gradlew ktlintCheck --build-cache |& tee ktlint.log"
+
+      - name: Capture failure snippet (ktlint)
+        if: failure()
+        run: |
+          python3 .github/scripts/extract_gradle_failure.py ktlint.log ktlint-failure.log
+          SUMMARY="$(head -n 1 ktlint-failure.log | tr -d '\r')"
+          if [ -z "$SUMMARY" ]; then
+            SUMMARY="KtLint check failed."
+          fi
+          {
+            echo "KTLINT_FAILURE_SUMMARY<<EOF"
+            echo "$SUMMARY"
+            echo "EOF"
+            echo "KTLINT_FAILURE_LOG_PATH=$(pwd)/ktlint-failure.log"
+          } >> "$GITHUB_ENV"
+
+      - name: Report failure (KtLint Check)
+        if: failure()
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          STAGE_NAME: "KtLint Check"
+          FAILURE_MESSAGE: ${{ env.KTLINT_FAILURE_SUMMARY || 'KtLint check failed.' }}
+          FAILURE_LOG_PATH: ${{ env.KTLINT_FAILURE_LOG_PATH }}
+          ISSUE_LABELS: "CI-KtLint"
+          FAILURE_ENVIRONMENT: |
+            Runner: ${{ runner.os }}
+            Event: ${{ github.event_name }}
+        run: bash .github/scripts/report_action_error.sh
+
+  test:
+    name: Tests (Unit, Robolectric)
+    if: ${{ needs.initialize-check.outputs.docs_only != 'true' }}
+    runs-on: ubuntu-latest
+    needs: ktlint
+    permissions:
+      contents: read
+      checks: write
+      pull-requests: write
+      issues: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-read-only: false
+          cache-cleanup: on-success
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      - name: Run tests and generate coverage
+        run: bash -o pipefail -c "./gradlew :simple_core:koverHtmlReport :simple_xml:koverHtmlReport --build-cache |& tee test-coverage.log"
+
+      - name: Capture failure snippet (Tests)
+        if: failure()
+        id: test_failure_snippet
+        run: |
+          python3 .github/scripts/extract_gradle_failure.py test-coverage.log test-failure-snippet.log
+          SUMMARY="$(head -n 1 test-failure-snippet.log | tr -d '\r')"
+          if [ -z "$SUMMARY" ]; then
+            SUMMARY="Tests or coverage generation failed."
+          fi
+          {
+            echo "TEST_FAILURE_SUMMARY<<EOF"
+            echo "$SUMMARY"
+            echo "EOF"
+            echo "TEST_FAILURE_LOG_PATH=$(pwd)/test-failure-snippet.log"
+          } >> "$GITHUB_ENV"
+
+      - name: Publish test results
+        uses: EnricoMi/publish-unit-test-result-action@v2
+        if: always()
+        with:
+          files: |
+            simple_core/build/test-results/**/*.xml
+            simple_xml/build/test-results/**/*.xml
+          check_name: Test Results
+
+      - name: Upload test reports
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-reports
+          path: |
+            simple_core/build/reports/tests/
+            simple_xml/build/reports/tests/
+          retention-days: 30
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: coverage-report
+          path: |
+            simple_core/build/reports/kover/html/
+            simple_xml/build/reports/kover/html/
+          retention-days: 30
+
+      - name: Report failure (Tests)
+        if: failure()
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          STAGE_NAME: "Tests (Unit, Robolectric)"
+          FAILURE_MESSAGE: ${{ env.TEST_FAILURE_SUMMARY || 'Tests failed. Please inspect test logs.' }}
+          FAILURE_LOG_PATH: ${{ env.TEST_FAILURE_LOG_PATH }}
+          FAILURE_ENVIRONMENT: |
+            Runner: ${{ runner.os }}
+            Event: ${{ github.event_name }}
+        run: bash .github/scripts/report_action_error.sh
+
+#  build:
+#    name: Build and Lint Check
+#    if: ${{ needs.initialize-check.outputs.docs_only != 'true' }}
+#    runs-on: ubuntu-latest
+#    needs: test
+#    permissions:
+#      contents: read
+#      checks: write
+#      pull-requests: write
+#      issues: write
+#
+#    steps:
+#      - name: Checkout
+#        uses: actions/checkout@v4
+#
+#      - name: Prepare Google Services config
+#        run: |
+#          cat <<'EOF' > app/google-services.json
+#          ${{ secrets.FIREBASE_CREDENTIALS }}
+#          EOF
+#
+#      - name: Validate Gradle Wrapper
+#        uses: gradle/wrapper-validation-action@v2
+#
+#      - name: Set up JDK 17
+#        uses: actions/setup-java@v4
+#        with:
+#          distribution: temurin
+#          java-version: 17
+#
+#      - name: Set up Android SDK (base)
+#        uses: android-actions/setup-android@v3
+#
+#      - name: Accept SDK licenses
+#        run: yes | sdkmanager --licenses
+#
+#      - name: Install SDK packages
+#        run: sdkmanager "platforms;android-35" "build-tools;35.0.0" "platform-tools"
+#
+#      - name: Setup Gradle (cache)
+#        uses: gradle/actions/setup-gradle@v4
+#
+#      - name: Make gradlew executable
+#        run: chmod +x ./gradlew
+#
+#      - name: Assemble
+#        run: bash -o pipefail -c "./gradlew assemble --stacktrace --build-cache |& tee build-assemble.log"
+#
+#      - name: Capture failure snippet (assemble)
+#        if: failure()
+#        run: |
+#          python3 .github/scripts/extract_gradle_failure.py build-assemble.log build-assemble-failure.log
+#          SUMMARY="$(head -n 1 build-assemble-failure.log | tr -d '\r')"
+#          if [ -z "$SUMMARY" ]; then
+#            SUMMARY="Build job failed while assembling artifacts."
+#          fi
+#          {
+#            echo "BUILD_FAILURE_SUMMARY<<EOF"
+#            echo "$SUMMARY"
+#            echo "EOF"
+#            echo "BUILD_FAILURE_LOG_PATH=$(pwd)/build-assemble-failure.log"
+#            echo "BUILD_FAILURE_SOURCE=assemble"
+#          } >> "$GITHUB_ENV"
+#
+#      - name: Android Lint (non-blocking)
+#        run: bash -o pipefail -c "./gradlew lint --build-cache |& tee build-lint.log"
+#
+#      - name: Capture failure snippet (lint)
+#        if: failure()
+#        run: |
+#          python3 .github/scripts/extract_gradle_failure.py build-lint.log build-lint-failure.log
+#          SUMMARY="$(head -n 1 build-lint-failure.log | tr -d '\r')"
+#          if [ -z "$SUMMARY" ]; then
+#            SUMMARY="Build job failed while running lint."
+#          fi
+#          {
+#            echo "BUILD_FAILURE_SUMMARY<<EOF"
+#            echo "$SUMMARY"
+#            echo "EOF"
+#            echo "BUILD_FAILURE_LOG_PATH=$(pwd)/build-lint-failure.log"
+#            echo "BUILD_FAILURE_SOURCE=lint"
+#          } >> "$GITHUB_ENV"
+#
+#      - name: Upload reports
+#        if: always()
+#        uses: actions/upload-artifact@v4
+#        with:
+#          name: build-reports
+#          path: |
+#            **/build/reports/**
+#            **/build/test-results/**
+#          if-no-files-found: ignore
+#
+#      - name: Report failure (Build and Lint Check)
+#        if: failure()
+#        env:
+#          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+#          STAGE_NAME: "Build and Lint Check"
+#          FAILURE_MESSAGE: ${{ env.BUILD_FAILURE_SUMMARY || 'Build and Lint Check job failed (tests, coverage, assemble, or lint).' }}
+#          FAILURE_LOG_PATH: ${{ env.BUILD_FAILURE_LOG_PATH }}
+#          FAILURE_ENVIRONMENT: |
+#            Runner: ${{ runner.os }}
+#            Event: ${{ github.event_name }}
+#        run: bash .github/scripts/report_action_error.sh

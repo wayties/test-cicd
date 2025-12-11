@@ -1,4 +1,6 @@
 # .github/workflows/android-ci.yml
+# Android 프로젝트에 대한 기본 CI 파이프라인 정의
+# master 브랜치에 대한 push/PR 및 수동 실행을 트리거로 동작
 name: 1. Android CI
 
 on:
@@ -9,210 +11,29 @@ on:
   workflow_dispatch:
 
 jobs:
+  # CI 워크플로우 초기화 단계 (향후 release 체크, docs-only 최적화 등 추가 예정)
   initialize-check:
     name: Initialize Check
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      issues: write
-    outputs:
-      should_release: ${{ steps.determine.outputs.should_release }}
-      tag: ${{ steps.determine.outputs.tag }}
-      title: ${{ steps.determine.outputs.title }}
-      body: ${{ steps.determine.outputs.body }}
-      docs_only: ${{ steps.determine.outputs.docs_only }}
-      testers: ${{ steps.determine.outputs.testers }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 10
+        # 저장소 코드를 CI 환경으로 가져옴
 
-      - name: Analyze release metadata
-        id: determine
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before || '' }}
+      - name: Initialize workflow
         run: |
-          set -euo pipefail
-          LOG_FILE="${GITHUB_WORKSPACE}/initialize-check.log"
-          exec > >(tee "$LOG_FILE")
-          exec 2>&1
+          # CI 실행 기본 정보를 출력하여 로그에서 쉽게 확인 가능하도록 함
+          echo "=== CI Workflow Started ==="
+          echo "Branch: ${{ github.ref_name }}"
+          echo "Event: ${{ github.event_name }}"
+          echo "Commit: ${{ github.sha }}"
+          echo "==========================="
 
-          SHOULD_RELEASE=false
-          TAG=""
-          TITLE=""
-          DESCRIBE=""
-          TESTERS=""
-
-          echo "Checking [release] tag in HEAD commit..."
-          COMMIT_MSG=$(git log -1 --pretty=%B 2>/dev/null || echo "")
-          if echo "$COMMIT_MSG" | grep -q "\[release\]"; then
-            FOUND=true
-          else
-            FOUND=false
-          fi
-
-          TARGET_BASE="${BASE_SHA}"
-          if [ -z "$TARGET_BASE" ]; then
-            if git rev-parse HEAD^ >/dev/null 2>&1; then
-              TARGET_BASE=$(git rev-parse HEAD^)
-            else
-              TARGET_BASE=""
-            fi
-          fi
-
-          echo "Calculating changed files against base '${TARGET_BASE:-<unknown>}'..."
-          if [ -n "$TARGET_BASE" ]; then
-            mapfile -t CHANGED_FILES < <(git diff --name-only "$TARGET_BASE" HEAD)
-          else
-            mapfile -t CHANGED_FILES < <(git ls-tree --name-only -r HEAD)
-          fi
-
-          DOCS_ONLY=false
-          if [ "${#CHANGED_FILES[@]}" -gt 0 ]; then
-            DOCS_ONLY=true
-            for file in "${CHANGED_FILES[@]}"; do
-              if [[ "$file" =~ (^|/)README[^/]*\.md$ ]]; then
-                continue
-              fi
-              if [[ "$file" =~ ^example_gif/ ]]; then
-                continue
-              fi
-              DOCS_ONLY=false
-              break
-            done
-          fi
-          echo "Docs-only commit detected? ${DOCS_ONLY}"
-
-          if [ "$FOUND" = false ]; then
-            if [ "$DOCS_ONLY" = true ]; then
-              echo "Doc-only commit without [release] block detected. Skipping downstream jobs."
-              {
-                echo "should_release=false"
-                echo "tag="
-                echo "title="
-                echo "body="
-                echo "docs_only=true"
-              } >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-            echo "No [release] block found in HEAD commit. Skipping release."
-            {
-              echo "should_release=false"
-              echo "tag="
-              echo "title="
-              echo "body="
-              echo "docs_only=false"
-            } >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          if [ "$DOCS_ONLY" = true ]; then
-            echo "Doc-only changes found but release metadata detected. Continuing CI."
-            DOCS_ONLY=false
-          fi
-
-          echo "Release block detected. Parsing metadata..."
-          TAG=$(echo "$COMMIT_MSG" | grep -oP '(?<=Tag)\s*:\s*.*' | head -1 | sed 's/^[[:space:]]*:[[:space:]]*//' | xargs || true)
-          TITLE=$(echo "$COMMIT_MSG" | grep -oP '(?<=Title)\s*:\s*.*' | head -1 | sed 's/^[[:space:]]*:[[:space:]]*//' | xargs || true)
-          DESCRIBE=$(echo "$COMMIT_MSG" | awk '/Describe\s*:/,0' | tail -n +1 | sed '1s/Describe\s*:\s*//' )
-          if [ -z "$DESCRIBE" ]; then
-            DESCRIBE=$(echo "$COMMIT_MSG" | awk '/Describe\s*:/,0' | tail -n +1 | sed '1s/Describe\s*:\s*//' )
-          fi
-          RAW_TESTERS=$(echo "$COMMIT_MSG" | grep -oP '(?<=Tester)\s*:\s*.*' | head -1 | sed 's/^[[:space:]]*:[[:space:]]*//' || true)
-          TESTERS=""
-          if [ -n "$RAW_TESTERS" ]; then
-            TESTERS=$(echo "$RAW_TESTERS" | sed 's/[[:space:]]//g')
-          fi
-
-          if [ -z "$TAG" ]; then
-            echo "Error: Tag not found in [release] block."
-            exit 1
-          fi
-
-          if ! echo "$TAG" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
-            echo "Error: Tag format is invalid. Expected x.x.x."
-            exit 1
-          fi
-
-          git fetch --tags
-          if git rev-parse "$TAG" >/dev/null 2>&1; then
-            echo "Error: Tag $TAG already exists."
-            exit 1
-          fi
-
-          GRADLE_VERSION=$(python3 .github/scripts/read_app_version.py || true)
-          if [ -z "$GRADLE_VERSION" ]; then
-            echo "Error: Failed to read version from library/build.gradle.kts"
-            exit 1
-          fi
-
-          if [ "$TAG" != "$GRADLE_VERSION" ]; then
-            echo "Error: Version mismatch between commit tag ($TAG) and build.gradle.kts ($GRADLE_VERSION)"
-            exit 1
-          fi
-
-          echo "Release metadata validated."
-          {
-            echo "should_release=true"
-            echo "tag=$TAG"
-            echo "title=$TITLE"
-            echo "body<<EOF"
-            echo "$DESCRIBE"
-            echo "EOF"
-            echo "testers=$TESTERS"
-            echo "docs_only=false"
-          } >> "$GITHUB_OUTPUT"
-
-      - name: Save metadata to artifact
-        if: steps.determine.outputs.should_release == 'true'
-        run: |
-          mkdir -p metadata
-          cat > metadata/release-metadata.json <<EOF
-          {
-            "should_release": "${{ steps.determine.outputs.should_release }}",
-            "tag": "${{ steps.determine.outputs.tag }}",
-            "title": "${{ steps.determine.outputs.title }}",
-            "body": $(echo '${{ steps.determine.outputs.body }}' | jq -Rs .),
-            "testers": "${{ steps.determine.outputs.testers }}"
-          }
-          EOF
-          cat metadata/release-metadata.json
-
-      - name: Upload metadata artifact
-        if: steps.determine.outputs.should_release == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: release-metadata
-          path: metadata/release-metadata.json
-          retention-days: 1
-
-      - name: Report failure (Initialize Check)
-        if: failure()
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          STAGE_NAME: "Initialize Check"
-          FAILURE_MESSAGE: "Release block validation failed. Please inspect release metadata."
-          RELEASE_CHECK_LOG: ${{ github.workspace }}/initialize-check.log
-          FAILURE_ENVIRONMENT: |
-            Runner: ${{ runner.os }}
-            Event: ${{ github.event_name }}
-        run: |
-          FAILURE_LOG_PATH="${GITHUB_WORKSPACE}/initialize-check-failure.log"
-          SUMMARY="Initialize Check failed. See logs above for details."
-          if [ -f "$RELEASE_CHECK_LOG" ]; then
-            python3 .github/scripts/extract_gradle_failure.py "$RELEASE_CHECK_LOG" "$FAILURE_LOG_PATH"
-            SUMMARY="$(head -n 1 "$FAILURE_LOG_PATH" | tr -d '\r')"
-          else
-            echo "$SUMMARY" > "$FAILURE_LOG_PATH"
-          fi
-          export FAILURE_LOG_PATH
-          export FAILURE_MESSAGE="$SUMMARY"
-          bash .github/scripts/report_action_error.sh
-
+  # Kotlin 코드 스타일 검사 단계
   ktlint:
     name: KtLint Check
-    if: ${{ needs.initialize-check.outputs.docs_only != 'true' }}
     runs-on: ubuntu-latest
     needs: initialize-check
     permissions:
@@ -222,28 +43,38 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        # 저장소 코드를 CI 환경으로 가져옴
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: 17
+        # Kotlin 컴파일 및 Gradle 빌드에 필요한 Java 17 설치
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
+          # Gradle 캐시 쓰기 허용 및 성공 시 자동 정리로 디스크 공간 관리
           cache-read-only: false
           cache-cleanup: on-success
+        # Gradle 빌드 도구 설정 및 의존성 캐싱으로 빌드 속도 향상
 
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
+        # Gradle Wrapper 실행 권한 부여 (Unix/Linux 환경)
 
       - name: Run KtLint
+        # Kotlin 코드 스타일 위반 여부를 검사하고 결과 로그를 저장
+        # .editorconfig 파일의 규칙을 기반으로 코드 스타일 검증
         run: bash -o pipefail -c "./gradlew ktlintCheck --build-cache |& tee ktlint.log"
 
       - name: Capture failure snippet (ktlint)
         if: failure()
         run: |
+          # KtLint 실패 시 로그 분석
+          # - Python 스크립트로 Gradle 로그에서 핵심 에러만 추출
+          # - 첫 줄 요약을 GitHub UI에 표시하여 빠른 원인 파악 지원
           python3 .github/scripts/extract_gradle_failure.py ktlint.log ktlint-failure.log
           SUMMARY="$(head -n 1 ktlint-failure.log | tr -d '\r')"
           if [ -z "$SUMMARY" ]; then
@@ -267,11 +98,12 @@ jobs:
           FAILURE_ENVIRONMENT: |
             Runner: ${{ runner.os }}
             Event: ${{ github.event_name }}
+        # 실패 시 공통 에러 리포트 스크립트 호출하여 GitHub Issue 생성 또는 알림
         run: bash .github/scripts/report_action_error.sh
 
+  # Unit 테스트 및 Robolectric 테스트 실행 단계
   test:
     name: Tests (Unit, Robolectric)
-    if: ${{ needs.initialize-check.outputs.docs_only != 'true' }}
     runs-on: ubuntu-latest
     needs: ktlint
     permissions:
@@ -283,29 +115,41 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        # 저장소 코드를 CI 환경으로 가져옴
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: 17
+        # 테스트 실행에 필요한 Java 17 설치
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
+          # Gradle 캐시 쓰기 허용 및 성공 시 자동 정리로 디스크 공간 관리
           cache-read-only: false
           cache-cleanup: on-success
+        # Gradle 빌드 도구 설정 및 의존성 캐싱으로 빌드 속도 향상
 
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
+        # Gradle Wrapper 실행 권한 부여 (Unix/Linux 환경)
 
       - name: Run tests and generate coverage
+        # koverHtmlReport Task 수행:
+        # 1. Unit Test 및 Robolectric Test 실행
+        # 2. Kover 플러그인으로 코드 커버리지 측정
+        # 3. HTML 형식의 커버리지 리포트 생성
         run: bash -o pipefail -c "./gradlew :library:koverHtmlReport --build-cache |& tee test-coverage.log"
 
       - name: Capture failure snippet (Tests)
         if: failure()
         id: test_failure_snippet
         run: |
+          # 테스트 실패 시 로그 분석
+          # - Python 스크립트로 Gradle 로그에서 핵심 에러만 추출
+          # - 실패한 테스트 케이스 및 에러 메시지 요약 생성
           python3 .github/scripts/extract_gradle_failure.py test-coverage.log test-failure-snippet.log
           SUMMARY="$(head -n 1 test-failure-snippet.log | tr -d '\r')"
           if [ -z "$SUMMARY" ]; then
@@ -325,6 +169,7 @@ jobs:
           files: |
             library/build/test-results/**/*.xml
           check_name: Test Results
+        # 테스트 결과를 GitHub PR/Commit에 직접 표시 (성공/실패 케이스 수 등)
 
       - name: Upload test reports
         uses: actions/upload-artifact@v4
@@ -334,6 +179,7 @@ jobs:
           path: |
             library/build/reports/tests/
           retention-days: 30
+        # HTML 형식의 상세 테스트 리포트를 아티팩트로 업로드 (30일 보관)
 
       - name: Upload coverage report
         uses: actions/upload-artifact@v4
@@ -343,6 +189,7 @@ jobs:
           path: |
             library/build/reports/kover/html/
           retention-days: 30
+        # 코드 커버리지 HTML 리포트를 아티팩트로 업로드 (성공 시만, 30일 보관)
 
       - name: Report failure (Tests)
         if: failure()
@@ -354,109 +201,140 @@ jobs:
           FAILURE_ENVIRONMENT: |
             Runner: ${{ runner.os }}
             Event: ${{ github.event_name }}
+        # 실패 시 공통 에러 리포트 스크립트 호출하여 GitHub Issue 생성 또는 알림
         run: bash .github/scripts/report_action_error.sh
 
-#  build:
-#    name: Build and Lint Check
-#    if: ${{ needs.initialize-check.outputs.docs_only != 'true' }}
-#    runs-on: ubuntu-latest
-#    needs: test
-#    permissions:
-#      contents: read
-#      checks: write
-#      pull-requests: write
-#      issues: write
-#
-#    steps:
-#      - name: Checkout
-#        uses: actions/checkout@v4
-#
-#      - name: Prepare Google Services config
-#        run: |
-#          cat <<'EOF' > app/google-services.json
-#          ${{ secrets.FIREBASE_CREDENTIALS }}
-#          EOF
-#
-#      - name: Validate Gradle Wrapper
-#        uses: gradle/wrapper-validation-action@v2
-#
-#      - name: Set up JDK 17
-#        uses: actions/setup-java@v4
-#        with:
-#          distribution: temurin
-#          java-version: 17
-#
-#      - name: Set up Android SDK (base)
-#        uses: android-actions/setup-android@v3
-#
-#      - name: Accept SDK licenses
-#        run: yes | sdkmanager --licenses
-#
-#      - name: Install SDK packages
-#        run: sdkmanager "platforms;android-35" "build-tools;35.0.0" "platform-tools"
-#
-#      - name: Setup Gradle (cache)
-#        uses: gradle/actions/setup-gradle@v4
-#
-#      - name: Make gradlew executable
-#        run: chmod +x ./gradlew
-#
-#      - name: Assemble
-#        run: bash -o pipefail -c "./gradlew assemble --stacktrace --build-cache |& tee build-assemble.log"
-#
-#      - name: Capture failure snippet (assemble)
-#        if: failure()
-#        run: |
-#          python3 .github/scripts/extract_gradle_failure.py build-assemble.log build-assemble-failure.log
-#          SUMMARY="$(head -n 1 build-assemble-failure.log | tr -d '\r')"
-#          if [ -z "$SUMMARY" ]; then
-#            SUMMARY="Build job failed while assembling artifacts."
-#          fi
-#          {
-#            echo "BUILD_FAILURE_SUMMARY<<EOF"
-#            echo "$SUMMARY"
-#            echo "EOF"
-#            echo "BUILD_FAILURE_LOG_PATH=$(pwd)/build-assemble-failure.log"
-#            echo "BUILD_FAILURE_SOURCE=assemble"
-#          } >> "$GITHUB_ENV"
-#
-#      - name: Android Lint (non-blocking)
-#        run: bash -o pipefail -c "./gradlew lint --build-cache |& tee build-lint.log"
-#
-#      - name: Capture failure snippet (lint)
-#        if: failure()
-#        run: |
-#          python3 .github/scripts/extract_gradle_failure.py build-lint.log build-lint-failure.log
-#          SUMMARY="$(head -n 1 build-lint-failure.log | tr -d '\r')"
-#          if [ -z "$SUMMARY" ]; then
-#            SUMMARY="Build job failed while running lint."
-#          fi
-#          {
-#            echo "BUILD_FAILURE_SUMMARY<<EOF"
-#            echo "$SUMMARY"
-#            echo "EOF"
-#            echo "BUILD_FAILURE_LOG_PATH=$(pwd)/build-lint-failure.log"
-#            echo "BUILD_FAILURE_SOURCE=lint"
-#          } >> "$GITHUB_ENV"
-#
-#      - name: Upload reports
-#        if: always()
-#        uses: actions/upload-artifact@v4
-#        with:
-#          name: build-reports
-#          path: |
-#            **/build/reports/**
-#            **/build/test-results/**
-#          if-no-files-found: ignore
-#
-#      - name: Report failure (Build and Lint Check)
-#        if: failure()
-#        env:
-#          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-#          STAGE_NAME: "Build and Lint Check"
-#          FAILURE_MESSAGE: ${{ env.BUILD_FAILURE_SUMMARY || 'Build and Lint Check job failed (tests, coverage, assemble, or lint).' }}
-#          FAILURE_LOG_PATH: ${{ env.BUILD_FAILURE_LOG_PATH }}
-#          FAILURE_ENVIRONMENT: |
-#            Runner: ${{ runner.os }}
-#            Event: ${{ github.event_name }}
-#        run: bash .github/scripts/report_action_error.sh
+  # APK/AAR 빌드 및 Android Lint 검사 단계
+  build:
+    name: Build and Lint Check
+    runs-on: ubuntu-latest
+    needs: test
+    permissions:
+      contents: read
+      checks: write
+      pull-requests: write
+      issues: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        # 저장소 코드를 CI 환경으로 가져옴
+
+      - name: Prepare Google Services config
+        run: |
+          cat <<'EOF' > app/google-services.json
+          ${{ secrets.FIREBASE_CREDENTIALS }}
+          EOF
+        # Firebase 연동을 위한 google-services.json 파일 생성
+        # GitHub Secrets에 저장된 Firebase 설정을 사용
+
+      - name: Validate Gradle Wrapper
+        uses: gradle/wrapper-validation-action@v2
+        # Gradle Wrapper 파일의 무결성 검증 (보안 검사)
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+        # Android 빌드에 필요한 Java 17 설치
+
+      - name: Set up Android SDK (base)
+        uses: android-actions/setup-android@v3
+        # Android SDK 기본 설치
+
+      - name: Accept SDK licenses
+        run: yes | sdkmanager --licenses
+        # Android SDK 라이선스 자동 동의
+
+      - name: Install SDK packages
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0" "platform-tools"
+        # Android 35 플랫폼, 빌드 도구, 플랫폼 도구 설치
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          # Gradle 캐시 쓰기 허용 및 성공 시 자동 정리로 디스크 공간 관리
+          cache-read-only: false
+          cache-cleanup: on-success
+        # Gradle 빌드 도구 설정 및 의존성 캐싱으로 빌드 속도 향상
+
+      - name: Make gradlew executable
+        run: chmod +x ./gradlew
+        # Gradle Wrapper 실행 권한 부여 (Unix/Linux 환경)
+
+      - name: Assemble
+        # APK 및 AAR 파일 빌드
+        # - app 모듈: APK 생성
+        # - library 모듈: AAR 생성 (향후 Jitpack 배포용)
+        run: bash -o pipefail -c "./gradlew assemble --stacktrace --build-cache |& tee build-assemble.log"
+
+      - name: Capture failure snippet (assemble)
+        if: failure()
+        run: |
+          # 빌드 실패 시 로그 분석
+          # - Python 스크립트로 Gradle 로그에서 핵심 에러만 추출
+          # - 컴파일 에러, 의존성 문제 등 빌드 실패 원인 요약
+          python3 .github/scripts/extract_gradle_failure.py build-assemble.log build-assemble-failure.log
+          SUMMARY="$(head -n 1 build-assemble-failure.log | tr -d '\r')"
+          if [ -z "$SUMMARY" ]; then
+            SUMMARY="Build job failed while assembling artifacts."
+          fi
+          {
+            echo "BUILD_FAILURE_SUMMARY<<EOF"
+            echo "$SUMMARY"
+            echo "EOF"
+            echo "BUILD_FAILURE_LOG_PATH=$(pwd)/build-assemble-failure.log"
+            echo "BUILD_FAILURE_SOURCE=assemble"
+          } >> "$GITHUB_ENV"
+
+      - name: Android Lint
+        # Android Lint 실행:
+        # - 코드 품질 검사 (unused resources, deprecated API 등)
+        # - 잠재적 버그 탐지 (NullPointerException 가능성 등)
+        # - 성능 이슈 검사
+        # - 보안 취약점 검사
+        run: bash -o pipefail -c "./gradlew lint --build-cache |& tee build-lint.log"
+
+      - name: Capture failure snippet (lint)
+        if: failure()
+        run: |
+          # Lint 실패 시 로그 분석
+          # - Python 스크립트로 Gradle 로그에서 핵심 에러만 추출
+          # - Lint 오류 및 경고 요약
+          python3 .github/scripts/extract_gradle_failure.py build-lint.log build-lint-failure.log
+          SUMMARY="$(head -n 1 build-lint-failure.log | tr -d '\r')"
+          if [ -z "$SUMMARY" ]; then
+            SUMMARY="Build job failed while running lint."
+          fi
+          {
+            echo "BUILD_FAILURE_SUMMARY<<EOF"
+            echo "$SUMMARY"
+            echo "EOF"
+            echo "BUILD_FAILURE_LOG_PATH=$(pwd)/build-lint-failure.log"
+            echo "BUILD_FAILURE_SOURCE=lint"
+          } >> "$GITHUB_ENV"
+
+      - name: Upload reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-reports
+          path: |
+            **/build/reports/**
+            **/build/test-results/**
+          if-no-files-found: ignore
+        # 빌드 및 Lint 리포트를 아티팩트로 업로드 (성공/실패 관계없이)
+
+      - name: Report failure (Build and Lint Check)
+        if: failure()
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          STAGE_NAME: "Build and Lint Check"
+          FAILURE_MESSAGE: ${{ env.BUILD_FAILURE_SUMMARY || 'Build and Lint Check job failed (tests, coverage, assemble, or lint).' }}
+          FAILURE_LOG_PATH: ${{ env.BUILD_FAILURE_LOG_PATH }}
+          FAILURE_ENVIRONMENT: |
+            Runner: ${{ runner.os }}
+            Event: ${{ github.event_name }}
+        # 실패 시 공통 에러 리포트 스크립트 호출하여 GitHub Issue 생성 또는 알림
+        run: bash .github/scripts/report_action_error.sh

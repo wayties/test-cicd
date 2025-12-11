@@ -51,6 +51,13 @@ dependencies {
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
 
-    implementation("com.github.Rhpark.Simple_UI_XML:Simple_UI_Core:0.3.29") // Core functionality only.
-    implementation("com.github.Rhpark.Simple_UI_XML:Simple_UI_XML:0.3.29") // XML UI components (includes Core).
+    // Core functionality only.
+    implementation("com.github.Rhpark.Simple_UI_XML:Simple_UI_Core:0.3.29") {
+        exclude(group = "com.android.support", module = "support-annotations")
+    }
+
+    // XML UI components (includes Core).
+    implementation("com.github.Rhpark.Simple_UI_XML:Simple_UI_XML:0.3.29")  {
+        exclude(group = "com.android.support", module = "support-annotations")
+    }
 }

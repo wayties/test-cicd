@@ -38,6 +38,12 @@ android {
         dataBinding = true // MVVM 패턴 사용 시 필수
         // viewBinding = true  // ViewBinding만 사용할 경우
     }
+
+//    lint {
+//        // NotificationPermission 에러를 경고로 변경 (외부 라이브러리 이슈)
+//        // Simple_UI_XML 라이브러리가 알림 기능을 포함하지만, 현재 프로젝트에서 직접 사용하지 않음
+//        warning.add("NotificationPermission")
+//    }
 }
 
 dependencies {
@@ -52,12 +58,12 @@ dependencies {
     androidTestImplementation(libs.androidx.espresso.core)
 
     // Core functionality only.
-    implementation("com.github.Rhpark.Simple_UI_XML:Simple_UI_Core:0.3.29") {
+    implementation("com.github.Rhpark.Simple_UI_XML:Simple_UI_Core:0.3.35") {
         exclude(group = "com.android.support", module = "support-annotations")
     }
 
     // XML UI components (includes Core).
-    implementation("com.github.Rhpark.Simple_UI_XML:Simple_UI_XML:0.3.29") {
+    implementation("com.github.Rhpark.Simple_UI_XML:Simple_UI_XML:0.3.35") {
         exclude(group = "com.android.support", module = "support-annotations")
     }
 }

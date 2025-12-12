@@ -49,18 +49,18 @@ jobs:
             echo "[release] block found!"
             echo "should_release=true" >> $GITHUB_OUTPUT
 
-            # Tag 추출
-            TAG=$(echo "$COMMIT_MSG" | grep -i '^Tag' | sed 's/^Tag[[:space:]]*:[[:space:]]*//' | tr -d '\r')
+            # Tag 추출 (앞의 공백 허용)
+            TAG=$(echo "$COMMIT_MSG" | grep -i '^[[:space:]]*Tag' | sed 's/^[[:space:]]*Tag[[:space:]]*:[[:space:]]*//' | tr -d '\r')
             echo "Extracted TAG: '$TAG'"
             echo "tag=$TAG" >> $GITHUB_OUTPUT
 
-            # Title 추출
-            TITLE=$(echo "$COMMIT_MSG" | grep -i '^Title' | sed 's/^Title[[:space:]]*:[[:space:]]*//' | tr -d '\r')
+            # Title 추출 (앞의 공백 허용)
+            TITLE=$(echo "$COMMIT_MSG" | grep -i '^[[:space:]]*Title' | sed 's/^[[:space:]]*Title[[:space:]]*:[[:space:]]*//' | tr -d '\r')
             echo "Extracted TITLE: '$TITLE'"
             echo "title=$TITLE" >> $GITHUB_OUTPUT
 
-            # Describe 추출 (여러 줄 가능)
-            DESCRIBE=$(echo "$COMMIT_MSG" | sed -n '/^Describe[[:space:]]*:/,/^$/p' | sed '1s/^Describe[[:space:]]*:[[:space:]]*//' | sed '/^$/d' | tr -d '\r')
+            # Describe 추출 (여러 줄 가능, 앞의 공백 허용)
+            DESCRIBE=$(echo "$COMMIT_MSG" | sed -n '/^[[:space:]]*Describe[[:space:]]*:/,/^$/p' | sed '1s/^[[:space:]]*Describe[[:space:]]*:[[:space:]]*//' | sed '/^$/d' | tr -d '\r')
             echo "Extracted DESCRIBE: '$DESCRIBE'"
             {
               echo "body<<EOF"

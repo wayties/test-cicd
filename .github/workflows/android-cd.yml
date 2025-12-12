@@ -25,13 +25,14 @@ jobs:
       testers: ${{ steps.load_metadata.outputs.testers }}
     steps:
       - name: Download metadata artifact
-        # CI에서 생성한 release-metadata 아티팩트를 내려받음 (없으면 그대로 스킵)
-        uses: dawidd6/action-download-artifact@v3
+        # CI에서 생성한 release-metadata 아티팩트를 내려받음 (workflow_run 이벤트용)
+        uses: actions/download-artifact@v4
         with:
-          workflow: android-ci.yml
           name: release-metadata
           path: metadata
-          if_no_artifact_found: ignore
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ github.event.workflow_run.id }}
+        continue-on-error: true
 
       - name: Load metadata
         # release-metadata.json이 있으면 should_release/tag/title/body/testers를 GITHUB_OUTPUT에 적재

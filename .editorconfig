@@ -1,2 +1,14 @@
+root = true
+
 [*.{kt,kts}]
 ktlint_standard_package-name = disabled
+
+
+[*.{kt,kts}]
+# 들여쓰기 설정
+indent_style = space # 들여쓰기 방식: space(스페이스) 또는 tab(탭) 중 선택
+indent_size = 4 # 들여쓰기 크기: 한 단계 들여쓰기 시 사용할 공백 개수
+tab_width = 4 # 탭 문자의 너비 설정
+
+[build.gradle.kts]
+ktlint_standard_import-ordering = disabled

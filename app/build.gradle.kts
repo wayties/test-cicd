@@ -84,6 +84,7 @@ android {
     }
 
     buildFeatures {
+        buildConfig = true // BuildConfig 필드 사용 활성화
         dataBinding = true // MVVM 패턴 사용 시 필수
         // viewBinding = true  // ViewBinding만 사용할 경우
     }

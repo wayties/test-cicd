@@ -17,6 +17,9 @@ jobs:
     name: Check CI Success
     runs-on: ubuntu-latest
     if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    permissions:
+      actions: read
+      contents: read
     outputs:
       should_release: ${{ steps.load_metadata.outputs.should_release }}
       tag: ${{ steps.load_metadata.outputs.tag }}
@@ -25,14 +28,29 @@ jobs:
       testers: ${{ steps.load_metadata.outputs.testers }}
     steps:
       - name: Download metadata artifact
-        # CI에서 생성한 release-metadata 아티팩트를 내려받음 (workflow_run 이벤트용)
-        uses: actions/download-artifact@v4
-        with:
-          name: release-metadata
-          path: metadata
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          run-id: ${{ github.event.workflow_run.id }}
-        continue-on-error: true
+        # CI에서 생성한 release-metadata 아티팩트를 GitHub API로 다운로드 (workflow_run 이벤트용)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # workflow_run에서 아티팩트 다운로드
+          ARTIFACTS_URL="${{ github.event.workflow_run.artifacts_url }}"
+
+          echo "Artifacts URL: $ARTIFACTS_URL"
+
+          # release-metadata 아티팩트 찾기
+          ARTIFACT_ID=$(gh api "$ARTIFACTS_URL" --jq '.artifacts[] | select(.name=="release-metadata") | .id')
+
+          if [ -n "$ARTIFACT_ID" ]; then
+            echo "Found artifact ID: $ARTIFACT_ID"
+            mkdir -p metadata
+            gh api "/repos/${{ github.repository }}/actions/artifacts/$ARTIFACT_ID/zip" > metadata.zip
+            unzip -o metadata.zip -d metadata
+            rm metadata.zip
+            echo "Artifact downloaded successfully"
+            ls -la metadata/
+          else
+            echo "No release-metadata artifact found"
+          fi
 
       - name: Load metadata
         # release-metadata.json이 있으면 should_release/tag/title/body/testers를 GITHUB_OUTPUT에 적재

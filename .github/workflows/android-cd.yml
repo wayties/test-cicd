@@ -116,6 +116,7 @@ jobs:
               echo "$SUMMARY"
               echo "EOF"
             } >> "$GITHUB_ENV"
+          fi
 
       - name: Report failure (Release from Commit Message)
         # 공통 에러 리포터로 실패 상황을 Issue/코멘트에 남김

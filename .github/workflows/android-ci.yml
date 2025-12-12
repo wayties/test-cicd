@@ -40,20 +40,28 @@ jobs:
         run: |
           COMMIT_MSG=$(git log -1 --pretty=%B)
 
+          echo "=== Commit Message ==="
+          echo "$COMMIT_MSG"
+          echo "======================"
+
           # [release] 블록이 있는지 확인
           if echo "$COMMIT_MSG" | grep -q '\[release\]'; then
+            echo "[release] block found!"
             echo "should_release=true" >> $GITHUB_OUTPUT
 
             # Tag 추출
             TAG=$(echo "$COMMIT_MSG" | grep -i '^Tag' | sed 's/^Tag[[:space:]]*:[[:space:]]*//' | tr -d '\r')
+            echo "Extracted TAG: '$TAG'"
             echo "tag=$TAG" >> $GITHUB_OUTPUT
 
             # Title 추출
             TITLE=$(echo "$COMMIT_MSG" | grep -i '^Title' | sed 's/^Title[[:space:]]*:[[:space:]]*//' | tr -d '\r')
+            echo "Extracted TITLE: '$TITLE'"
             echo "title=$TITLE" >> $GITHUB_OUTPUT
 
             # Describe 추출 (여러 줄 가능)
             DESCRIBE=$(echo "$COMMIT_MSG" | sed -n '/^Describe[[:space:]]*:/,/^$/p' | sed '1s/^Describe[[:space:]]*:[[:space:]]*//' | sed '/^$/d' | tr -d '\r')
+            echo "Extracted DESCRIBE: '$DESCRIBE'"
             {
               echo "body<<EOF"
               echo "$DESCRIBE"

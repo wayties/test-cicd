@@ -3,6 +3,16 @@ plugins {
     alias(libs.plugins.kotlin.android)
 }
 
+// 빌드 타입별 Suffix 상수
+object AppConfig {
+    const val DEBUG = "debug"
+    const val VERIFICATION = "verification"
+    const val RELEASE = "release"
+    const val DEBUG_SUFFIX = ".$DEBUG"
+    const val VERIFICATION_SUFFIX = ".$VERIFICATION"
+    const val RELEASE_SUFFIX = ""
+}
+
 android {
     namespace = "com.wayties.test_cicd"
     compileSdk = 35
@@ -18,12 +28,51 @@ android {
     }
 
     buildTypes {
+        debug {
+            applicationIdSuffix = AppConfig.DEBUG_SUFFIX
+
+            // Develop 모드: Crashlytics 비활성화
+//            manifestPlaceholders["crashlytics_collection_enabled"] = false
+
+            buildConfigField("String", "BUILD_TYPE_NAME", "\"${AppConfig.DEBUG}\"")
+            buildConfigField("String", "CRASH_REPORT_URL", "\"\"")
+            buildConfigField("String", "CRASH_API_KEY", "\"\"")
+        }
+
+        create(AppConfig.VERIFICATION) {
+            initWith(getByName(AppConfig.DEBUG))
+            applicationIdSuffix = AppConfig.VERIFICATION_SUFFIX
+
+            // verification 빌드타입이 없을 때 debug 설정을 재사용
+            matchingFallbacks += listOf(AppConfig.DEBUG)
+
+            // Testing 모드: Crashlytics 비활성화
+//            manifestPlaceholders["crashlytics_collection_enabled"] = false
+
+            // BuildConfig 필드 추가
+            buildConfigField("String", "BUILD_TYPE_NAME", "\"${AppConfig.VERIFICATION}\"")
+//            buildConfigField(
+//                "String",
+//                "CRASH_REPORT_URL",
+//                "\"https://us-central1-rhpark-cc1f1.cloudfunctions.net/reportTestCrash\"",
+//            )
+//            buildConfigField("String", "CRASH_API_KEY", "\"SIMPLE_UI_VER_2025_nR8kL4mX9pT2wQ7vK3sN\"")
+        }
+
         release {
+            applicationIdSuffix = AppConfig.RELEASE_SUFFIX
             isMinifyEnabled = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
             )
+
+            // Release 모드: Crashlytics 활성화
+            manifestPlaceholders["crashlytics_collection_enabled"] = true
+
+            buildConfigField("String", "BUILD_TYPE_NAME", "\"${AppConfig.RELEASE}\"")
+//            buildConfigField("String", "CRASH_REPORT_URL", "\"\"")
+//            buildConfigField("String", "CRASH_API_KEY", "\"\"")
         }
     }
     compileOptions {

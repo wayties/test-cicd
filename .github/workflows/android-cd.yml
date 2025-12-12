@@ -1,0 +1,245 @@
+# .github/workflows/android-cd.yml
+# CI 성공 후 자동 태그/릴리즈 생성과 검증 APK 빌드까지 수행하는 CD 파이프라인 (Firebase 배포 제거)
+name: 2. Android CD
+
+on:
+  workflow_run:
+    workflows: ["1. Android CI"]
+    types:
+      - completed
+    branches:
+      - master
+  workflow_dispatch:
+
+jobs:
+  # CI 워크플로가 성공했는지 확인하고, 릴리즈 메타데이터를 불러오는 단계
+  check-ci-success:
+    name: Check CI Success
+    runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    outputs:
+      should_release: ${{ steps.load_metadata.outputs.should_release }}
+      tag: ${{ steps.load_metadata.outputs.tag }}
+      title: ${{ steps.load_metadata.outputs.title }}
+      body: ${{ steps.load_metadata.outputs.body }}
+      testers: ${{ steps.load_metadata.outputs.testers }}
+    steps:
+      - name: Download metadata artifact
+        # CI에서 생성한 release-metadata 아티팩트를 내려받음 (없으면 그대로 스킵)
+        uses: dawidd6/action-download-artifact@v3
+        with:
+          workflow: android-ci.yml
+          name: release-metadata
+          path: metadata
+          if_no_artifact_found: ignore
+
+      - name: Load metadata
+        # release-metadata.json이 있으면 should_release/tag/title/body/testers를 GITHUB_OUTPUT에 적재
+        id: load_metadata
+        run: |
+          if [ -f "metadata/release-metadata.json" ]; then
+            cat metadata/release-metadata.json
+            echo "should_release=$(jq -r .should_release metadata/release-metadata.json)" >> $GITHUB_OUTPUT
+            echo "tag=$(jq -r .tag metadata/release-metadata.json)" >> $GITHUB_OUTPUT
+            echo "title=$(jq -r .title metadata/release-metadata.json)" >> $GITHUB_OUTPUT
+            BODY=$(jq -r .body metadata/release-metadata.json)
+            {
+              echo "body<<EOF"
+              echo "$BODY"
+              echo "EOF"
+            } >> $GITHUB_OUTPUT
+            echo "testers=$(jq -r .testers metadata/release-metadata.json)" >> $GITHUB_OUTPUT
+          else
+            echo "No metadata found. Skipping release."
+            echo "should_release=false" >> $GITHUB_OUTPUT
+            echo "tag=" >> $GITHUB_OUTPUT
+            echo "title=" >> $GITHUB_OUTPUT
+            echo "body=" >> $GITHUB_OUTPUT
+            echo "testers=" >> $GITHUB_OUTPUT
+          fi
+
+  # 커밋 메시지에서 파싱한 버전 정보로 Git 태그 및 GitHub Release를 생성하는 단계
+  release:
+    name: Release from Commit Message
+    runs-on: ubuntu-latest
+    needs: check-ci-success
+    if: needs.check-ci-success.outputs.should_release == 'true'
+    permissions:
+      contents: write
+      issues: write
+    steps:
+      - name: Checkout code
+        # 태그 생성·푸시를 위해 저장소 히스토리를 일부 가져옴
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 10
+
+      - name: Create Git Tag
+        # 메타데이터의 tag 값으로 주석 태그 생성 후 원격에 푸시
+        run: |
+          TAG="${{ needs.check-ci-success.outputs.tag }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          bash -o pipefail -c "git tag -a \"$TAG\" -m \"Release $TAG\" | tee -a release-tag.log"
+          bash -o pipefail -c "git push origin \"$TAG\" | tee -a release-tag.log"
+
+      - name: Create GitHub Release
+        # 커밋 메시지에서 온 title/body로 공개 릴리즈 생성
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.check-ci-success.outputs.tag }}
+          name: ${{ needs.check-ci-success.outputs.title }}
+          body: ${{ needs.check-ci-success.outputs.body }}
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Capture failure snippet (Release)
+        # 태그/릴리즈 단계 실패 시 로그에서 요약을 추출해 보고용 환경변수로 저장
+        if: failure()
+        run: |
+          LOG_FILE="release-tag.log"
+          SUMMARY="Release job failed. Verify tagging or GitHub release steps."
+          if [ -f "$LOG_FILE" ]; then
+            python3 .github/scripts/extract_gradle_failure.py "$LOG_FILE" release-failure.log
+            SUMMARY="$(head -n 1 release-failure.log | tr -d '\r')"
+            {
+              echo "RELEASE_FAILURE_SUMMARY<<EOF"
+              echo "$SUMMARY"
+              echo "EOF"
+              echo "RELEASE_FAILURE_LOG_PATH=$(pwd)/release-failure.log"
+            } >> "$GITHUB_ENV"
+          else
+            {
+              echo "RELEASE_FAILURE_SUMMARY<<EOF"
+              echo "$SUMMARY"
+              echo "EOF"
+            } >> "$GITHUB_ENV"
+
+      - name: Report failure (Release from Commit Message)
+        # 공통 에러 리포터로 실패 상황을 Issue/코멘트에 남김
+        if: failure()
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          STAGE_NAME: "Release from Commit Message"
+          FAILURE_MESSAGE: ${{ env.RELEASE_FAILURE_SUMMARY || 'Release job failed. Verify tagging or GitHub release steps.' }}
+          FAILURE_LOG_PATH: ${{ env.RELEASE_FAILURE_LOG_PATH }}
+          FAILURE_ENVIRONMENT: |
+            Runner: ${{ runner.os }}
+            Event: ${{ github.event_name }}
+        run: bash .github/scripts/report_action_error.sh
+
+  # 검증용 APK를 빌드해 아티팩트로 업로드하는 단계
+  assemble-apk:
+    name: Assemble APK
+    runs-on: ubuntu-latest
+    needs: [release, check-ci-success]
+    if: needs.check-ci-success.outputs.should_release == 'true'
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Prepare Google Services config
+        # Firebase 자격증명 시크릿으로 google-services.json 생성
+        run: |
+          cat <<'EOF' > app/google-services.json
+          ${{ secrets.FIREBASE_CREDENTIALS }}
+          EOF
+
+      - name: Validate Gradle Wrapper
+        uses: gradle/wrapper-validation-action@v2
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+          cache: gradle
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Accept SDK licenses
+        run: yes | sdkmanager --licenses
+
+      - name: Install SDK packages
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0" "platform-tools"
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Make gradlew executable
+        run: chmod +x ./gradlew
+
+      - name: Assemble verification APK
+        # verification 빌드타입 APK 생성 (서명/미서명 둘 중 존재하는 산출물을 사용)
+        id: assemble_verification
+        run: bash -o pipefail -c "./gradlew :app:assembleVerification --stacktrace --build-cache |& tee assemble-verification.log"
+
+      - name: Capture failure snippet (Assemble verification APK)
+        # 빌드 실패 시 로그 첫 줄 요약을 추출해 보고용 변수에 저장
+        if: failure()
+        run: |
+          python3 .github/scripts/extract_gradle_failure.py assemble-verification.log assemble-apk-failure.log
+          SUMMARY="$(head -n 1 assemble-apk-failure.log | tr -d '\r')"
+          if [ -z "$SUMMARY" ]; then
+            SUMMARY="Failed while assembling verification APK."
+          fi
+          {
+            echo "ASSEMBLE_FAILURE_SUMMARY<<EOF"
+            echo "$SUMMARY"
+            echo "EOF"
+            echo "ASSEMBLE_FAILURE_LOG_PATH=$(pwd)/assemble-apk-failure.log"
+          } >> "$GITHUB_ENV"
+
+      - name: Determine verification artifact path
+        # 생성된 APK 위치를 확인해 아티팩트로 업로드할 경로를 결정
+        id: verification_artifact
+        run: |
+          set -euo pipefail
+          VERIFICATION_APK="app/build/outputs/apk/verification/app-verification.apk"
+          VERIFICATION_UNSIGNED="app/build/outputs/apk/verification/app-verification-unsigned.apk"
+          SELECTED=""
+          SOURCE=""
+          if [ -f "$VERIFICATION_APK" ]; then
+            SELECTED="$VERIFICATION_APK"
+            SOURCE="signed verification"
+          elif [ -f "$VERIFICATION_UNSIGNED" ]; then
+            SELECTED="$VERIFICATION_UNSIGNED"
+            SOURCE="unsigned verification"
+          fi
+          if [ -n "$SELECTED" ]; then
+            echo "artifact=$SELECTED" >> "$GITHUB_OUTPUT"
+            echo "artifact_source=$SOURCE" >> "$GITHUB_OUTPUT"
+            echo "Selected $SOURCE artifact: $SELECTED"
+          else
+            echo "artifact=" >> "$GITHUB_OUTPUT"
+            echo "artifact_source=" >> "$GITHUB_OUTPUT"
+            echo "::error::No verification APK artifacts found."
+            exit 1
+          fi
+
+      - name: Upload verification APK artifact
+        # Firebase 단계 제거 후에도 검증 APK를 아티팩트로 보관(수동 다운로드용)
+        uses: actions/upload-artifact@v4
+        with:
+          name: verification-apk
+          path: ${{ steps.verification_artifact.outputs.artifact }}
+          retention-days: 7
+
+      - name: Report failure (Assemble APK)
+        # 빌드 단계 실패를 공통 에러 리포터로 전달
+        if: failure()
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          STAGE_NAME: "Assemble APK"
+          FAILURE_MESSAGE: ${{ env.ASSEMBLE_FAILURE_SUMMARY || 'Assemble APK job failed.' }}
+          FAILURE_LOG_PATH: ${{ env.ASSEMBLE_FAILURE_LOG_PATH }}
+          FAILURE_ENVIRONMENT: |
+            Runner: ${{ runner.os }}
+            Event: ${{ github.event_name }}
+        run: bash .github/scripts/report_action_error.sh

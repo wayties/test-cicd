@@ -11,7 +11,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  # CI 워크플로우 초기화 단계 (향후 release 체크, docs-only 최적화 등 추가 예정)
+  # CI 워크플로우 초기화 단계 (release 체크, 메타데이터 생성 등)
   initialize-check:
     name: Initialize Check
     runs-on: ubuntu-latest
@@ -20,7 +20,10 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 5
         # 저장소 코드를 CI 환경으로 가져옴
+        # fetch-depth: 최근 5개 커밋 히스토리 가져오기 (릴리즈 메타데이터 파싱용)
 
       - name: Initialize workflow
         run: |
@@ -30,6 +33,65 @@ jobs:
           echo "Event: ${{ github.event_name }}"
           echo "Commit: ${{ github.sha }}"
           echo "==========================="
+
+      - name: Parse release metadata from commit message
+        # 커밋 메시지에서 [release] 블록 파싱 및 메타데이터 생성
+        id: parse_release
+        run: |
+          COMMIT_MSG=$(git log -1 --pretty=%B)
+
+          # [release] 블록이 있는지 확인
+          if echo "$COMMIT_MSG" | grep -q '\[release\]'; then
+            echo "should_release=true" >> $GITHUB_OUTPUT
+
+            # Tag 추출
+            TAG=$(echo "$COMMIT_MSG" | grep -i '^Tag' | sed 's/^Tag[[:space:]]*:[[:space:]]*//' | tr -d '\r')
+            echo "tag=$TAG" >> $GITHUB_OUTPUT
+
+            # Title 추출
+            TITLE=$(echo "$COMMIT_MSG" | grep -i '^Title' | sed 's/^Title[[:space:]]*:[[:space:]]*//' | tr -d '\r')
+            echo "title=$TITLE" >> $GITHUB_OUTPUT
+
+            # Describe 추출 (여러 줄 가능)
+            DESCRIBE=$(echo "$COMMIT_MSG" | sed -n '/^Describe[[:space:]]*:/,/^$/p' | sed '1s/^Describe[[:space:]]*:[[:space:]]*//' | sed '/^$/d' | tr -d '\r')
+            {
+              echo "body<<EOF"
+              echo "$DESCRIBE"
+              echo "EOF"
+            } >> $GITHUB_OUTPUT
+
+            echo "testers=" >> $GITHUB_OUTPUT
+
+            echo "Release metadata parsed: Tag=$TAG, Title=$TITLE"
+          else
+            echo "should_release=false" >> $GITHUB_OUTPUT
+            echo "No [release] block found in commit message."
+          fi
+
+      - name: Save release metadata to file
+        # 파싱된 메타데이터를 JSON 파일로 저장 (CD 워크플로우 전달용)
+        if: steps.parse_release.outputs.should_release == 'true'
+        run: |
+          mkdir -p metadata
+          cat > metadata/release-metadata.json <<EOF
+          {
+            "should_release": "${{ steps.parse_release.outputs.should_release }}",
+            "tag": "${{ steps.parse_release.outputs.tag }}",
+            "title": "${{ steps.parse_release.outputs.title }}",
+            "body": "${{ steps.parse_release.outputs.body }}",
+            "testers": "${{ steps.parse_release.outputs.testers }}"
+          }
+          EOF
+          cat metadata/release-metadata.json
+
+      - name: Upload release metadata
+        # CD 워크플로우가 사용할 수 있도록 메타데이터 아티팩트 업로드
+        if: steps.parse_release.outputs.should_release == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-metadata
+          path: metadata/release-metadata.json
+          retention-days: 1
 
   # Kotlin 코드 스타일 검사 단계
   ktlint:
